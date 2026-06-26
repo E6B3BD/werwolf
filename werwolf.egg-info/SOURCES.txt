@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+app/__init__.py
+app/main.py
+werwolf.egg-info/PKG-INFO
+werwolf.egg-info/SOURCES.txt
+werwolf.egg-info/dependency_links.txt
+werwolf.egg-info/requires.txt
+werwolf.egg-info/top_level.txt

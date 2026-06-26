@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Werwolf Web</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-main">
+          <div class="title-wrap">
+            <p class="brand-mark">WERWOLF</p>
+            <div class="title-copy">
+              <div class="title-main-copy">
+                <h1 id="gameTitle">等待创建对局</h1>
+                <p id="gameMeta" class="meta-text">创建后会显示你的身份、当前阶段和可执行操作</p>
+              </div>
+            </div>
+          </div>
+
+          <section class="title-status-card">
+            <p id="currentHint" class="current-hint top-hint">创建新对局后，这里会告诉你当前应该做什么。</p>
+            <p id="privateMessage" class="private-message hidden"></p>
+            <span id="pendingActionText" class="hidden" aria-hidden="true"></span>
+          </section>
+
+          <section class="setup-bar">
+            <div class="setup-inline">
+              <label for="playerCount">人数</label>
+              <select id="playerCount">
+                <option value="12" selected>12 人局</option>
+              </select>
+            </div>
+            <button id="createGameBtn">创建对局</button>
+            <button id="refreshBtn" class="secondary-btn">刷新</button>
+            <div class="status-inline">
+              <span class="status-label">OpenAI</span>
+              <strong class="{{ 'ok' if openai_enabled else 'warn' }}">
+                {{ '已启用' if openai_enabled else '未配置，当前使用本地兜底 AI' }}
+              </strong>
+            </div>
+          </section>
+        </div>
+
+        <div class="topbar-actions">
+          <span id="humanRole" class="role-chip hidden">身份待定</span>
+          <span id="phaseBadge" class="phase-badge">未开始</span>
+          <span id="timerBadge" class="timer-badge hidden">剩余 00 秒</span>
+          <span id="winnerBadge" class="winner-badge hidden">-</span>
+        </div>
+      </header>
+
+      <section class="main-layout">
+        <aside id="playersPanel" class="side-panel">
+          <div class="panel-head">
+            <h2>玩家列表</h2>
+          </div>
+          <div id="playersBoard" class="players-board empty-state">暂无对局数据</div>
+        </aside>
+
+        <main class="chat-panel">
+          <section class="chat-room main-info-grid">
+            <section class="info-column">
+              <div class="chat-head">
+                <h2>聊天信息</h2>
+                <span class="muted">这里只显示玩家发言与遗言</span>
+              </div>
+              <div id="speechFeedBoard" class="chat-feed empty-state">白天开始后，这里会逐条显示所有玩家的发言与遗言。</div>
+            </section>
+
+            <section class="info-column side-info-column">
+              <div class="chat-head">
+                <h2>系统信息</h2>
+                <span class="muted">系统播报与关键记录分开展示</span>
+              </div>
+              <div class="info-stack">
+                <section class="sub-info-card">
+                  <div class="sub-info-head">系统播报</div>
+                  <div id="eventsBoard" class="mini-feed empty-state">暂无系统播报</div>
+                </section>
+                <section class="sub-info-card">
+                  <div class="sub-info-head">关键记录</div>
+                  <div id="historyBoard" class="mini-feed empty-state">暂无关键记录</div>
+                </section>
+              </div>
+            </section>
+          </section>
+        </main>
+
+        <aside class="right-panel">
+          <section class="board-card action-card">
+            <div class="panel-head">
+              <h2>当前操作</h2>
+            </div>
+            <div id="actionPanel" class="action-panel">
+              <div id="wolfChatSection" class="field action-section hidden">
+                <label for="wolfChatInput">狼人夜聊</label>
+                <textarea id="wolfChatInput" placeholder="输入你想对狼队说的话，支持连续交流与改刀建议。"></textarea>
+                <label for="wolfTargetSelect">建议刀人目标</label>
+                <select id="wolfTargetSelect"></select>
+                <button id="wolfChatBtn">发送协商并锁定目标</button>
+              </div>
+
+              <div id="sheriffSection" class="field action-section hidden">
+                <label class="checkbox-row">
+                  <input id="runForSheriffCheckbox" type="checkbox" />
+                  <span>我要上警竞选警长</span>
+                </label>
+                <label for="sheriffSpeechInput">竞选发言</label>
+                <textarea id="sheriffSpeechInput" placeholder="如果轮到你警上发言，在这里输入发言。"></textarea>
+                <label for="sheriffVoteSelect">若处于投票阶段，请选择警长候选人</label>
+                <select id="sheriffVoteSelect"></select>
+                <button id="sheriffBtn">提交警长动作</button>
+              </div>
+
+              <div id="directionSection" class="field action-section hidden">
+                <label>警长决定发言顺序</label>
+                <div class="inline-actions">
+                  <button id="directionLeftBtn" class="secondary-btn">从左开始</button>
+                  <button id="directionRightBtn" class="secondary-btn">从右开始</button>
+                </div>
+              </div>
+
+              <div id="speechSection" class="field action-section hidden">
+                <label for="speechInput">白天发言</label>
+                <textarea id="speechInput" placeholder="输入你的白天发言。"></textarea>
+                <button id="speechBtn">提交发言</button>
+              </div>
+
+              <div id="lastWordsSection" class="field action-section hidden">
+                <label for="lastWordsInput">遗言</label>
+                <textarea id="lastWordsInput" placeholder="输入你的遗言。"></textarea>
+                <button id="lastWordsBtn">提交遗言</button>
+              </div>
+
+              <div id="nightSection" class="field action-section hidden">
+                <label for="nightActionType">夜晚动作</label>
+                <select id="nightActionType">
+                  <option value="skip">跳过</option>
+                  <option value="inspect">查验</option>
+                  <option value="guard">守护</option>
+                  <option value="save">救人</option>
+                  <option value="poison">毒人</option>
+                </select>
+                <label for="targetSelect">目标玩家</label>
+                <select id="targetSelect"></select>
+                <button id="nightBtn">提交夜晚动作</button>
+              </div>
+
+              <div id="voteSection" class="field action-section hidden">
+                <label for="voteSelect">白天投票</label>
+                <select id="voteSelect"></select>
+                <button id="voteBtn">提交投票</button>
+              </div>
+
+              <div id="badgeSection" class="field action-section hidden">
+                <label for="badgeTargetSelect">警徽移交目标</label>
+                <select id="badgeTargetSelect"></select>
+                <div class="inline-actions">
+                  <button id="badgeTransferBtn">移交警徽</button>
+                  <button id="badgeTearBtn" class="secondary-btn">撕毁警徽</button>
+                </div>
+              </div>
+
+              <div id="selfDestructSection" class="field action-section hidden">
+                <label>狼人自爆</label>
+                <div class="spectator-note">自爆会立刻结束当前白天流程并直接进入夜晚。</div>
+                <button id="selfDestructBtn" class="danger-btn">立即自爆</button>
+              </div>
+
+              <div id="spectatorSection" class="field action-section hidden">
+                <label>当前状态</label>
+                <div class="spectator-note">此阶段你无需操作，继续观察聊天与系统播报即可。</div>
+              </div>
+            </div>
+          </section>
+
+          <section id="wolfChatCard" class="board-card hidden">
+            <div class="panel-head">
+              <h2>狼队夜聊</h2>
+            </div>
+            <div id="wolfChatBoard" class="mini-feed empty-state">你不是狼人时，这里不会显示夜聊内容。</div>
+          </section>
+        </aside>
+      </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+  </html>
