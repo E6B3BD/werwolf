@@ -3,9 +3,12 @@
 /docs
 /tests
 
+# Python
+__pycache__/
+
 # 日志 & 临时文件
 .env
 AGENTS.md
 .vscode
-.playwright-cli
-.pytest_cache
+.playwright-cli/
+.pytest_cache/
