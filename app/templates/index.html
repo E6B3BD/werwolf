@@ -22,7 +22,6 @@
 
           <section class="title-status-card">
             <p id="currentHint" class="current-hint top-hint">创建新对局后，这里会告诉你当前应该做什么。</p>
-            <p id="privateMessage" class="private-message hidden"></p>
             <span id="pendingActionText" class="hidden" aria-hidden="true"></span>
           </section>
 
@@ -90,6 +89,13 @@
         </main>
 
         <aside class="right-panel">
+          <section id="privateContextCard" class="board-card private-context-card hidden">
+            <div class="panel-head">
+              <h2>你的信息</h2>
+            </div>
+            <p id="privateMessage" class="private-message hidden"></p>
+          </section>
+
           <section class="board-card action-card">
             <div class="panel-head">
               <h2>当前操作</h2>
@@ -98,9 +104,10 @@
               <div id="wolfChatSection" class="field action-section hidden">
                 <label for="wolfChatInput">狼人夜聊</label>
                 <textarea id="wolfChatInput" placeholder="输入你想对狼队说的话，支持连续交流与改刀建议。"></textarea>
-                <label for="wolfTargetSelect">建议刀人目标</label>
+                <label for="wolfTargetSelect">本条建议目标</label>
                 <select id="wolfTargetSelect"></select>
-                <button id="wolfChatBtn">发送协商并锁定目标</button>
+                <button id="wolfChatBtn">发送夜聊</button>
+                <button id="wolfConfirmBtn" class="danger-btn">确认最终刀人目标</button>
               </div>
 
               <div id="sheriffSection" class="field action-section hidden">

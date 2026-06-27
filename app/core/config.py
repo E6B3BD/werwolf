@@ -19,6 +19,8 @@ class Settings:
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     host: str = os.getenv("HOST", "127.0.0.1")
     port: int = int(os.getenv("PORT", "8008"))
+    agent_decision_timeout_seconds: float = float(os.getenv("AGENT_DECISION_TIMEOUT_SECONDS", "18"))
+    auto_ai_live: bool = os.getenv("AUTO_AI_LIVE", "false").lower() in {"1", "true", "yes", "on"}
 
     @property
     def openai_enabled(self) -> bool:

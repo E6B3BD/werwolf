@@ -1,7 +1,11 @@
 # 系统文件
 .DS_Store
+/docs
 
 
 # 日志 & 临时文件
 .env
+AGENTS.md
+.vscode
+
 

@@ -5,6 +5,7 @@ const state = {
   pollTimer: null,
   renderedSpeechKeys: new Set(),
   deferredSnapshot: null,
+  lastSnapshotSeq: -1,
   boardScrollLocks: new WeakMap(),
   optionSignatures: {
     target: "",
@@ -33,6 +34,7 @@ const speechBtn = document.getElementById("speechBtn");
 const nightBtn = document.getElementById("nightBtn");
 const voteBtn = document.getElementById("voteBtn");
 const wolfChatBtn = document.getElementById("wolfChatBtn");
+const wolfConfirmBtn = document.getElementById("wolfConfirmBtn");
 const sheriffBtn = document.getElementById("sheriffBtn");
 const lastWordsBtn = document.getElementById("lastWordsBtn");
 const badgeTransferBtn = document.getElementById("badgeTransferBtn");
@@ -54,6 +56,7 @@ const badgeTargetSelect = document.getElementById("badgeTargetSelect");
 const nightActionType = document.getElementById("nightActionType");
 const currentHint = document.getElementById("currentHint");
 const pendingActionText = document.getElementById("pendingActionText");
+const privateContextCard = document.getElementById("privateContextCard");
 const timerBadge = document.getElementById("timerBadge");
 const humanRole = document.getElementById("humanRole");
 const wolfChatCard = document.getElementById("wolfChatCard");
@@ -199,14 +202,65 @@ async function requestJson(url, payload) {
     headers: { "Content-Type": "application/json" },
     body: payload ? JSON.stringify(payload) : undefined,
   });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = payload?.detail ? `：${payload.detail}` : "";
+    } catch (_) {
+      detail = "";
+    }
+    throw new Error(`请求失败 ${response.status}${detail}`);
+  }
   return response.json();
 }
 
+function showActionError(error) {
+  console.error("操作失败", error);
+  const privateMessage = document.getElementById("privateMessage");
+  if (!privateMessage) {
+    return;
+  }
+  privateContextCard?.classList.remove("hidden");
+  privateMessage.classList.remove("hidden");
+  privateMessage.classList.add("action-error");
+  privateMessage.textContent = error instanceof Error ? error.message : "操作失败，请刷新后重试。";
+}
+
+function clearActionError() {
+  const privateMessage = document.getElementById("privateMessage");
+  privateMessage?.classList.remove("action-error");
+}
+
+async function runLockedAction(lockKey, button, action) {
+  if (button?.disabled) return;
+  if (lockKey) {
+    state.lockedActions[lockKey] = true;
+  }
+  if (button) {
+    button.disabled = true;
+  }
+  clearActionError();
+  try {
+    const snapshot = await action();
+    applySnapshot(snapshot);
+  } catch (error) {
+    if (lockKey) {
+      state.lockedActions[lockKey] = false;
+    }
+    if (button) {
+      button.disabled = false;
+    }
+    showActionError(error);
+    syncActionPanel(state.snapshot);
+  }
+}
+
 createGameBtn.addEventListener("click", async () => {
-  const snapshot = await requestJson("/api/games", {
+  await runLockedAction(null, createGameBtn, async () => requestJson("/api/games", {
     player_count: Number(playerCount.value),
-  });
-  applySnapshot(snapshot);
+  }));
+  createGameBtn.disabled = false;
 });
 
 refreshBtn.addEventListener("click", async () => {
@@ -218,121 +272,126 @@ refreshBtn.addEventListener("click", async () => {
 
 speechBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (speechBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/speech`, {
-    content: speechInput.value,
+  await runLockedAction("speech", speechBtn, async () => {
+    const snapshot = await requestJson(`/api/games/${state.gameId}/speech`, {
+      content: speechInput.value,
+    });
+    speechInput.value = "";
+    return snapshot;
   });
-  speechInput.value = "";
-  state.lockedActions.speech = true;
-  applySnapshot(snapshot);
 });
 
 nightBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (nightBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/night`, {
-    action_type: nightActionType.value,
-    target_id: targetSelect.value === "" ? null : Number(targetSelect.value),
-  });
-  state.lockedActions.night = true;
-  applySnapshot(snapshot);
+  await runLockedAction("night", nightBtn, async () => requestJson(`/api/games/${state.gameId}/night`, {
+      action_type: nightActionType.value,
+      target_id: targetSelect.value === "" ? null : Number(targetSelect.value),
+    }));
 });
 
 voteBtn.addEventListener("click", async () => {
   if (!state.gameId || voteSelect.value === "") return;
-  if (voteBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/vote`, {
-    target_id: Number(voteSelect.value),
-  });
-  state.lockedActions.vote = true;
-  applySnapshot(snapshot);
+  const endpoint = state.snapshot?.phase === "hunter_shot" ? "hunter-shot" : "vote";
+  await runLockedAction("vote", voteBtn, async () => requestJson(`/api/games/${state.gameId}/${endpoint}`, {
+      target_id: Number(voteSelect.value),
+    }));
 });
 
 wolfChatBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (wolfChatBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/wolf-chat`, {
-    action_type: "wolf_kill",
-    target_id: wolfTargetSelect.value === "" ? null : Number(wolfTargetSelect.value),
-    chat_content: wolfChatInput.value,
+  await runLockedAction("wolf_chat", wolfChatBtn, async () => {
+    const snapshot = await requestJson(`/api/games/${state.gameId}/wolf-chat`, {
+      action_type: "wolf_chat",
+      target_id: wolfTargetSelect.value === "" ? null : Number(wolfTargetSelect.value),
+      chat_content: wolfChatInput.value,
+    });
+    wolfChatInput.value = "";
+    return snapshot;
   });
-  wolfChatInput.value = "";
-  state.lockedActions.wolf_chat = true;
-  applySnapshot(snapshot);
+});
+
+wolfConfirmBtn.addEventListener("click", async () => {
+  if (!state.gameId) return;
+  if (wolfTargetSelect.value === "") {
+    showActionError(new Error("请先选择一个合法刀口，再确认最终目标。"));
+    return;
+  }
+  await runLockedAction("wolf_chat", wolfConfirmBtn, async () => {
+    const snapshot = await requestJson(`/api/games/${state.gameId}/wolf-chat`, {
+      action_type: "wolf_confirm",
+      target_id: wolfTargetSelect.value === "" ? null : Number(wolfTargetSelect.value),
+      chat_content: wolfChatInput.value || "我确认这个最终刀口，今晚统一执行。",
+    });
+    wolfChatInput.value = "";
+    return snapshot;
+  });
 });
 
 sheriffBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (sheriffBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/sheriff`, {
-    run_for_sheriff: runForSheriffCheckbox.checked,
-    vote_target_id: sheriffVoteSelect.value === "" ? null : Number(sheriffVoteSelect.value),
-    speech: sheriffSpeechInput.value,
+  await runLockedAction("sheriff", sheriffBtn, async () => {
+    const snapshot = await requestJson(`/api/games/${state.gameId}/sheriff`, {
+      run_for_sheriff: runForSheriffCheckbox.checked,
+      vote_target_id: sheriffVoteSelect.value === "" ? null : Number(sheriffVoteSelect.value),
+      speech: sheriffSpeechInput.value,
+    });
+    sheriffSpeechInput.value = "";
+    return snapshot;
   });
-  sheriffSpeechInput.value = "";
-  state.lockedActions.sheriff = true;
-  applySnapshot(snapshot);
 });
 
 lastWordsBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (lastWordsBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/last-words`, {
-    content: lastWordsInput.value,
+  await runLockedAction("last_words", lastWordsBtn, async () => {
+    const snapshot = await requestJson(`/api/games/${state.gameId}/last-words`, {
+      content: lastWordsInput.value,
+    });
+    lastWordsInput.value = "";
+    return snapshot;
   });
-  lastWordsInput.value = "";
-  state.lockedActions.last_words = true;
-  applySnapshot(snapshot);
 });
 
 badgeTransferBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (badgeTransferBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/badge`, {
-    badge_target_id: badgeTargetSelect.value === "" ? null : Number(badgeTargetSelect.value),
-    tear_badge: false,
-  });
-  state.lockedActions.badge = true;
-  applySnapshot(snapshot);
+  await runLockedAction("badge", badgeTransferBtn, async () => requestJson(`/api/games/${state.gameId}/badge`, {
+      badge_target_id: badgeTargetSelect.value === "" ? null : Number(badgeTargetSelect.value),
+      tear_badge: false,
+    }));
 });
 
 badgeTearBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (badgeTearBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/badge`, {
-    tear_badge: true,
-  });
-  state.lockedActions.badge = true;
-  applySnapshot(snapshot);
+  await runLockedAction("badge", badgeTearBtn, async () => requestJson(`/api/games/${state.gameId}/badge`, {
+      tear_badge: true,
+    }));
 });
 
 selfDestructBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/self-destruct`);
-  applySnapshot(snapshot);
+  await runLockedAction(null, selfDestructBtn, async () => requestJson(`/api/games/${state.gameId}/self-destruct`));
 });
 
 directionLeftBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (directionLeftBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/speech-order`, {
-    speech_order_direction: "left",
-  });
-  state.lockedActions.direction = true;
-  applySnapshot(snapshot);
+  await runLockedAction("direction", directionLeftBtn, async () => requestJson(`/api/games/${state.gameId}/speech-order`, {
+      speech_order_direction: "left",
+    }));
 });
 
 directionRightBtn.addEventListener("click", async () => {
   if (!state.gameId) return;
-  if (directionRightBtn.disabled) return;
-  const snapshot = await requestJson(`/api/games/${state.gameId}/speech-order`, {
-    speech_order_direction: "right",
-  });
-  state.lockedActions.direction = true;
-  applySnapshot(snapshot);
+  await runLockedAction("direction", directionRightBtn, async () => requestJson(`/api/games/${state.gameId}/speech-order`, {
+      speech_order_direction: "right",
+    }));
 });
 
 function applySnapshot(snapshot) {
+  const nextSeq = Number(snapshot.snapshot_seq ?? 0);
+  const currentSeq = Number(state.lastSnapshotSeq ?? -1);
+  if (state.gameId === snapshot.game_id && nextSeq < currentSeq) {
+    return;
+  }
+  state.lastSnapshotSeq = Math.max(currentSeq, nextSeq);
   const inputState = captureInputState();
   const previousSnapshot = state.snapshot;
   state.gameId = snapshot.game_id;
@@ -361,16 +420,20 @@ function applySnapshot(snapshot) {
   humanRole.textContent = `你的身份：${snapshot.human_role}`;
   if (pendingActionText) {
     pendingActionText.textContent =
-      snapshot.pending_human_action ? `当前需要执行：${snapshot.pending_human_action}` : "当前无强制操作标记";
+      snapshot.pending_human_action ? `当前需要执行：${formatPendingAction(snapshot.pending_human_action)}` : "当前无强制操作标记";
   }
   if (currentHint) {
     currentHint.textContent = snapshot.current_hint || "等待下一步。";
   }
 
-  if (privateMessage && snapshot.human_private_message) {
+  const privateText = snapshot.human_private_context || snapshot.human_private_message;
+  if (privateMessage && privateText) {
+    privateContextCard?.classList.remove("hidden");
     privateMessage.classList.remove("hidden");
-    privateMessage.textContent = snapshot.human_private_message;
+    privateMessage.classList.remove("action-error");
+    privateMessage.textContent = privateText;
   } else if (privateMessage) {
+    privateContextCard?.classList.add("hidden");
     privateMessage.classList.add("hidden");
     privateMessage.textContent = "";
   }
@@ -389,7 +452,7 @@ function applySnapshot(snapshot) {
   renderPlayers(snapshot.players, snapshot);
   renderWolfChats(snapshot);
   renderSpeechFeed(snapshot.speeches, snapshot);
-  renderEvents(snapshot.events);
+  renderEvents(snapshot.visible_timeline, snapshot);
   renderHistory(snapshot.votes, snapshot.night_summaries, snapshot.players);
   rebuildTargetOptions(snapshot);
   syncActionLocks(snapshot, previousSnapshot);
@@ -468,13 +531,14 @@ function renderPlayers(players, snapshot) {
     const row = document.createElement("div");
     const isCurrentSpeaker = revealActiveSpeaker && snapshot.current_speaker_id === player.id;
     const isWolfMate = (snapshot.wolf_teammate_ids || []).includes(player.id);
-    const shouldRevealRole = snapshot.phase === "game_over" || player.is_human || isWolfMate;
-    const roleText = shouldRevealRole ? `身份：${player.role}` : "身份：未知";
+    const shouldRevealRole = snapshot.phase === "game_over" || player.is_human;
+    const roleText = shouldRevealRole ? `身份：${player.role}` : (isWolfMate ? "身份：狼队友" : "身份：未知");
     row.className = `player-row ${player.alive ? "alive" : "dead"} ${isCurrentSpeaker ? "active-speaker" : ""}`.trim();
     row.innerHTML = `
       <div class="player-topline">
         <strong>${player.name}${player.is_sheriff ? " · 警长" : ""}</strong>
         ${player.is_human ? `<span class="player-tag self-tag">你</span>` : ""}
+        ${isWolfMate ? `<span class="player-tag wolf-tag">队友</span>` : ""}
         ${isCurrentSpeaker ? `<span class="player-tag">当前发言</span>` : ""}
       </div>
       <div class="player-meta">
@@ -493,23 +557,70 @@ function renderWolfChats(snapshot) {
     wolfChatBoard.innerHTML = `<div class="empty-state">你不是狼人，无法查看狼队夜聊。</div>`;
     return;
   }
-  if (!snapshot.wolf_chat_records.length) {
-    wolfChatBoard.innerHTML = `<div class="empty-state">本轮暂无狼人夜聊。</div>`;
+  const historySummaries = Array.isArray(snapshot.wolf_history_summaries)
+    ? snapshot.wolf_history_summaries.filter(Boolean)
+    : [];
+  if (historySummaries.length) {
+    const historyRow = document.createElement("div");
+    historyRow.className = "wolf-chat-card wolf-history-card";
+    historyRow.innerHTML = `
+      <div class="speech-meta">
+        <strong>狼队历史摘要</strong>
+        <span>仅狼人可见</span>
+      </div>
+      <div class="wolf-history-list">
+        ${historySummaries.slice(-3).map((summary) => `<div class="wolf-history-item">${summary}</div>`).join("")}
+      </div>
+    `;
+    wolfChatBoard.appendChild(historyRow);
+  }
+  const currentNightRecords = Array.isArray(snapshot.wolf_chat_records)
+    ? snapshot.wolf_chat_records.filter((record) => record.night_id === snapshot.night_id)
+    : [];
+  if (!currentNightRecords.length) {
+    const emptyRow = document.createElement("div");
+    emptyRow.className = "empty-state";
+    emptyRow.textContent = "本轮暂无狼人夜聊。";
+    wolfChatBoard.appendChild(emptyRow);
     return;
   }
-  snapshot.wolf_chat_records.forEach((record) => {
+  currentNightRecords.forEach((record) => {
     const row = document.createElement("div");
-    row.className = "wolf-chat-card";
+    const isFinal = snapshot.wolf_night_plan?.locked &&
+      snapshot.wolf_night_plan?.final_confirmer_id === record.player_id &&
+      snapshot.wolf_night_plan?.current_target_id === record.proposed_target_id;
+    row.className = `wolf-chat-card ${isFinal ? "wolf-chat-final" : ""}`.trim();
     row.innerHTML = `
       <div class="speech-meta">
         <strong>${record.player_name}</strong>
-        <span class="seat-badge">${record.player_id + 1}号位</span>
+        <span class="seat-badge">${record.speaker_seat_no || record.player_id + 1}号位</span>
+        <span>第 ${record.round_id || 1} 轮</span>
+        ${isFinal ? `<span class="player-tag">最终确认</span>` : ""}
       </div>
       <div class="wolf-chat-content">${record.content}</div>
-      <div class="summary-meta">建议目标：${formatTarget(record.proposed_target_id, snapshot.players)}</div>
+      <div class="summary-meta">
+        ${isFinal ? "最终目标" : "建议目标"}：${formatTarget(record.proposed_target_id, snapshot.players)}
+        ${record.stance_to_previous ? ` / ${formatWolfStance(record.stance_to_previous)}` : ""}
+      </div>
     `;
     wolfChatBoard.appendChild(row);
   });
+  if (
+    snapshot.wolf_night_plan?.current_target_id !== null &&
+    snapshot.wolf_night_plan?.current_target_id !== undefined &&
+    !snapshot.wolf_night_plan.locked
+  ) {
+    const planRow = document.createElement("div");
+    planRow.className = "wolf-chat-card wolf-plan-card";
+    planRow.innerHTML = `
+      <div class="speech-meta"><strong>当前狼队计划</strong></div>
+      <div class="wolf-chat-content">
+        ${formatTarget(snapshot.wolf_night_plan.current_target_id, snapshot.players)}
+        （未最终确认）
+      </div>
+    `;
+    wolfChatBoard.appendChild(planRow);
+  }
   maybeStickBoardToBottom(wolfChatBoard);
 }
 
@@ -554,7 +665,7 @@ function renderSpeechFeed(speeches, snapshot) {
   if (
     activeSpeaker &&
     !activeSpeaker.is_human &&
-    ["day_speech", "sheriff_speech", "sheriff_pk_speech", "last_words"].includes(snapshot.phase)
+    ["day_speech", "sheriff_speech", "sheriff_pk_speech", "exile_pk_speech", "last_words"].includes(snapshot.phase)
   ) {
     const thinkingRow = document.createElement("div");
     thinkingRow.className = "chat-bubble speech-bubble thinking-bubble";
@@ -575,10 +686,31 @@ function renderSpeechFeed(speeches, snapshot) {
   maybeStickBoardToBottom(speechFeedBoard);
 }
 
-function renderEvents(events) {
+function renderEvents(timeline, snapshot = null) {
   eventsBoard.innerHTML = "";
-  const uniqueEvents = events.filter((event, index, source) =>
-    index === source.findIndex((item) => item.phase === event.phase && item.message === event.message)
+  const sourceEvents = Array.isArray(timeline)
+    ? timeline
+        .filter((item) => item.kind === "event")
+        .map((item) => ({
+          phase: item.phase,
+          visibility: item.visibility,
+          day: item.day,
+          night_id: item.night_id,
+          message: item.content,
+          occurrence_key: item.occurrence_key || item.item_id,
+        }))
+    : [];
+  const scopedEvents = sourceEvents.filter((event) => {
+    if (event.visibility === "audit") return false;
+    if (event.phase === "wolf_chat" && snapshot?.night_id !== undefined && event.night_id !== snapshot.night_id) return false;
+    return true;
+  });
+  const uniqueEvents = scopedEvents.filter((event, index, source) =>
+    index === source.findIndex((item) => {
+      const leftKey = item.occurrence_key || `${item.phase}:${item.visibility}:${item.day}:${item.night_id}:${item.message}`;
+      const rightKey = event.occurrence_key || `${event.phase}:${event.visibility}:${event.day}:${event.night_id}:${event.message}`;
+      return leftKey === rightKey;
+    })
   );
   if (!uniqueEvents.length) {
     eventsBoard.innerHTML = `<div class="empty-state">这里会显示系统播报。</div>`;
@@ -726,27 +858,27 @@ function renderHistory(votes, nightSummaries, players) {
 }
 
 function rebuildTargetOptions(snapshot) {
-  const aliveTargets = snapshot.players.filter((player) =>
+  const legalTargets = snapshot.players.filter((player) =>
     snapshot.human_target_candidates.includes(player.id)
   );
   setSelectOptionsIfChanged(
     targetSelect,
     "target",
-    aliveTargets,
+    legalTargets,
     (player) => ({ value: String(player.id), label: `${player.name}（座位 ${player.id + 1}）` }),
     "无目标 / 跳过"
   );
   setSelectOptionsIfChanged(
     wolfTargetSelect,
     "wolfTarget",
-    aliveTargets,
+    legalTargets,
     (player) => ({ value: String(player.id), label: `${player.name}（座位 ${player.id + 1}）` }),
     "请选择狼队目标"
   );
   setSelectOptionsIfChanged(
     voteSelect,
     "vote",
-    aliveTargets,
+    legalTargets,
     (player) => ({ value: String(player.id), label: `${player.name}（座位 ${player.id + 1}）` })
   );
   const sheriffCandidates = (snapshot.sheriff_candidates || [])
@@ -762,15 +894,15 @@ function rebuildTargetOptions(snapshot) {
   setSelectOptionsIfChanged(
     badgeTargetSelect,
     "badgeTarget",
-    aliveTargets,
+    legalTargets,
     (player) => ({ value: String(player.id), label: `${player.name}（座位 ${player.id + 1}）` }),
     "请选择移交对象"
   );
 
-  rebuildNightActionOptions(snapshot.human_allowed_night_actions || []);
+  rebuildNightActionOptions(snapshot.human_allowed_night_actions || [], snapshot);
 }
 
-function rebuildNightActionOptions(allowedActions) {
+function rebuildNightActionOptions(allowedActions, snapshot = null) {
   const labels = {
     skip: "跳过",
     inspect: "查验",
@@ -779,7 +911,9 @@ function rebuildNightActionOptions(allowedActions) {
     poison: "毒人",
   };
 
-  const actionItems = (allowedActions.length ? allowedActions : ["skip"]).map((action) => ({
+  const filteredActions = (allowedActions.length ? allowedActions : ["skip"])
+    .filter((action) => action !== "guard" || snapshot?.guard_enabled);
+  const actionItems = (filteredActions.length ? filteredActions : ["skip"]).map((action) => ({
     value: action,
     label: labels[action] || action,
   }));
@@ -823,7 +957,7 @@ function syncActionPanel(snapshot) {
     selfDestructBtn.disabled = false;
   }
 
-  if (!humanAlive && phase !== "last_words" && phase !== "badge_transfer") {
+  if (!humanAlive && phase !== "last_words" && phase !== "badge_transfer" && phase !== "hunter_shot") {
     spectatorSection.classList.remove("hidden");
     return;
   }
@@ -832,9 +966,12 @@ function syncActionPanel(snapshot) {
     if (snapshot.human_is_wolf) {
       wolfChatSection.classList.remove("hidden");
       const myTurn = snapshot.current_speaker_id === snapshot.human_player_id;
-      wolfChatBtn.disabled = !myTurn || state.lockedActions.wolf_chat;
-      wolfChatInput.disabled = !myTurn || state.lockedActions.wolf_chat;
-      wolfTargetSelect.disabled = !myTurn || state.lockedActions.wolf_chat;
+      const lockedPlan = Boolean(snapshot.wolf_night_plan?.locked);
+      const wolfChatLocked = state.lockedActions.wolf_chat;
+      wolfChatBtn.disabled = !myTurn || lockedPlan || state.lockedActions.wolf_chat;
+      wolfConfirmBtn.disabled = !myTurn || lockedPlan || wolfChatLocked;
+      wolfChatInput.disabled = !myTurn || lockedPlan || wolfChatLocked;
+      wolfTargetSelect.disabled = !myTurn || lockedPlan || wolfChatLocked;
       return;
     }
     spectatorSection.classList.remove("hidden");
@@ -856,6 +993,10 @@ function syncActionPanel(snapshot) {
   }
 
   if (phase === "sheriff_election" || phase === "sheriff_speech" || phase === "sheriff_vote" || phase === "sheriff_pk_speech" || phase === "sheriff_pk_vote") {
+    if (!snapshot.sheriff_enabled) {
+      spectatorSection.classList.remove("hidden");
+      return;
+    }
     const isElection = phase === "sheriff_election";
     const isSpeechPhase = phase === "sheriff_speech" || phase === "sheriff_pk_speech";
     const isVotePhase = phase === "sheriff_vote" || phase === "sheriff_pk_vote";
@@ -872,7 +1013,7 @@ function syncActionPanel(snapshot) {
     return;
   }
 
-  if (phase === "day_speech" && snapshot.available_speech_directions?.length) {
+  if (snapshot.sheriff_enabled && phase === "day_speech" && snapshot.available_speech_directions?.length) {
     directionSection.classList.remove("hidden");
     directionLeftBtn.disabled = state.lockedActions.direction;
     directionRightBtn.disabled = state.lockedActions.direction;
@@ -890,13 +1031,29 @@ function syncActionPanel(snapshot) {
     return;
   }
 
-  if (phase === "day_vote") {
+  if (phase === "exile_pk_speech") {
+    if (snapshot.current_speaker_id === snapshot.human_player_id || pending === "exile_pk_speech") {
+      speechSection.classList.remove("hidden");
+      speechBtn.disabled = state.lockedActions.speech;
+      speechInput.disabled = state.lockedActions.speech;
+      return;
+    }
+    spectatorSection.classList.remove("hidden");
+    return;
+  }
+
+  if (phase === "day_vote" || phase === "exile_pk_vote" || phase === "hunter_shot") {
     const humanPlayer = snapshot.players.find((player) => player.id === snapshot.human_player_id);
-    if (!humanPlayer?.can_vote) {
+    if (phase !== "hunter_shot" && !humanPlayer?.can_vote) {
       spectatorSection.classList.remove("hidden");
       return;
     }
     voteSection.classList.remove("hidden");
+    const voteLabel = voteSection.querySelector("label[for='voteSelect']");
+    if (voteLabel) {
+      voteLabel.textContent = phase === "hunter_shot" ? "猎人开枪目标" : "白天投票";
+    }
+    voteBtn.textContent = phase === "hunter_shot" ? "提交开枪目标" : "提交投票";
     voteBtn.disabled = state.lockedActions.vote;
     voteSelect.disabled = state.lockedActions.vote;
     return;
@@ -914,6 +1071,10 @@ function syncActionPanel(snapshot) {
   }
 
   if (phase === "badge_transfer") {
+    if (!snapshot.sheriff_enabled) {
+      spectatorSection.classList.remove("hidden");
+      return;
+    }
     if (pending === "badge_transfer") {
       badgeSection.classList.remove("hidden");
       badgeTransferBtn.disabled = state.lockedActions.badge;
@@ -929,8 +1090,15 @@ function syncActionPanel(snapshot) {
 }
 
 function resetDisabledState() {
+  const voteLabel = voteSection.querySelector("label[for='voteSelect']");
+  if (voteLabel) {
+    voteLabel.textContent = "白天投票";
+  }
+  voteBtn.textContent = "提交投票";
+
   [
     wolfChatBtn,
+    wolfConfirmBtn,
     sheriffBtn,
     speechBtn,
     lastWordsBtn,
@@ -967,6 +1135,8 @@ function syncActionLocks(snapshot, previousSnapshot = null) {
     previousSnapshot &&
     (
       previousSnapshot.phase !== snapshot.phase ||
+      previousSnapshot.day !== snapshot.day ||
+      previousSnapshot.night_id !== snapshot.night_id ||
       previousSnapshot.pending_human_action !== snapshot.pending_human_action ||
       previousSnapshot.current_speaker_id !== snapshot.current_speaker_id
     )
@@ -982,7 +1152,7 @@ function syncActionLocks(snapshot, previousSnapshot = null) {
   if (!["sheriff_election", "sheriff_speech", "sheriff_vote", "sheriff_pk_speech", "sheriff_pk_vote"].includes(snapshot.phase)) {
     state.lockedActions.sheriff = false;
   }
-  if (snapshot.pending_human_action !== "day_speech") {
+  if (snapshot.pending_human_action !== "day_speech" && snapshot.pending_human_action !== "exile_pk_speech") {
     state.lockedActions.speech = false;
   }
   if (snapshot.pending_human_action !== "last_words") {
@@ -991,7 +1161,7 @@ function syncActionLocks(snapshot, previousSnapshot = null) {
   if (snapshot.phase !== "night") {
     state.lockedActions.night = false;
   }
-  if (snapshot.phase !== "day_vote") {
+  if (!["day_vote", "exile_pk_vote", "hunter_shot"].includes(snapshot.phase)) {
     state.lockedActions.vote = false;
   }
   if (snapshot.pending_human_action !== "badge_transfer") {
@@ -1056,10 +1226,42 @@ function formatSpeechType(type) {
   const map = {
     campaign: "警上发言",
     pk_campaign: "PK 发言",
+    exile_pk: "放逐PK发言",
     day: "白天发言",
     last_words: "遗言",
   };
   return map[type] || type;
+}
+
+function formatWolfStance(stance) {
+  const map = {
+    proposal: "提出刀口",
+    support: "支持当前刀口",
+    switch: "改刀建议",
+    skip: "未给目标",
+  };
+  return map[stance] || stance;
+}
+
+function formatPendingAction(action) {
+  const map = {
+    wolf_chat: "狼队夜聊发言",
+    night: "夜间技能选择",
+    day_speech: "白天发言",
+    day_vote: "白天放逐投票",
+    exile_pk_speech: "放逐PK发言",
+    exile_pk_vote: "放逐PK投票",
+    last_words: "遗言",
+    hunter_shot: "猎人开枪",
+    badge_transfer: "警徽移交",
+    choose_speech_order: "选择发言顺序",
+    sheriff_election: "警长竞选选择",
+    sheriff_speech: "警上发言",
+    sheriff_vote: "警长投票",
+    sheriff_pk_speech: "警长PK发言",
+    sheriff_pk_vote: "警长PK投票",
+  };
+  return map[action] || "玩家操作";
 }
 
 function formatPhase(phase) {
@@ -1072,7 +1274,10 @@ function formatPhase(phase) {
     sheriff_vote: "警长投票",
     sheriff_pk_speech: "警长PK发言",
     sheriff_pk_vote: "警长PK投票",
+    exile_pk_speech: "放逐PK发言",
+    exile_pk_vote: "放逐PK投票",
     last_words: "遗言",
+    hunter_shot: "猎人开枪",
     badge_transfer: "警徽移交",
     day_speech: "白天发言",
     day_vote: "放逐投票",
